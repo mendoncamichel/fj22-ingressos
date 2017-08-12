@@ -52,6 +52,12 @@
                     <label for="sobrenome">Sobrenome:</label>
                     <input id="sobrenome" type="text" name="sobrenome" class="form-control">
                 </div>
+                
+                 <div class="col-md-6">
+                    <label for="vencimento">Vencimento:</label>
+                    <input id="vencimento" type="text" name="vencimento" class="form-control">
+                </div>
+                
             </div>
 
             <div class="form-group">
