@@ -4,7 +4,7 @@ Aplicação **PowerShell + WinForms** (lançada por `.bat`) que consulta o Oracl
 
 ## Como executar
 
-1. Coloque `Oracle.ManagedDataAccess.dll` em `lib\` (veja Dependências).
+1. **Na sua máquina**, copie manualmente `Oracle.ManagedDataAccess.dll` para a pasta `lib\` (veja Dependências). A DLL **não** vem no Git e **não** deve ser commitada.
 2. Dê duplo clique em `VerificadorDemonstrativos.bat`  
    (ou: `powershell -STA -File VerificadorDemonstrativos.ps1`).
 3. Informe **usuário** e **senha** Oracle (sempre solicitados; a senha **não** é gravada).
@@ -31,7 +31,9 @@ As queries usam parâmetros (`:data`, `:prestador`) — sem concatenação de SQ
 | Dependência | Obrigatório? | Como obter |
 |---|---|---|
 | **Windows PowerShell 5.1+** | Sim | Já incluso no Windows 10/11 |
-| **Oracle.ManagedDataAccess.dll** | Sim | Pacote NuGet [Oracle.ManagedDataAccess](https://www.nuget.org/packages/Oracle.ManagedDataAccess/). **Caminho padrão:** `lib\Oracle.ManagedDataAccess.dll` (pasta `lib` ao lado do `.ps1`). Fallback: DLL na mesma pasta do script. Não é necessário Oracle Instant Client. |
+| **Oracle.ManagedDataAccess.dll** | Sim (**somente local**) | Baixe o pacote NuGet [Oracle.ManagedDataAccess](https://www.nuget.org/packages/Oracle.ManagedDataAccess/) e **copie a DLL manualmente** para `lib\Oracle.ManagedDataAccess.dll` no PC. Fallback: mesma pasta do `.ps1`. Não é necessário Oracle Instant Client. |
+
+**Importante:** a DLL fica **só na sua máquina**. Está no `.gitignore` (`lib/*.dll` e afins) — **nunca faça commit** de `Oracle.ManagedDataAccess.dll` nem de outros binários Oracle.
 
 Estrutura esperada:
 
@@ -40,8 +42,10 @@ verificador-demonstrativos/
   VerificadorDemonstrativos.bat
   VerificadorDemonstrativos.ps1
   README.md
+  .gitignore                 ← ignora *.dll / Oracle*
   lib/
-    Oracle.ManagedDataAccess.dll   ← colocar aqui
+    .gitkeep                 ← pasta versionada (vazia no Git)
+    Oracle.ManagedDataAccess.dll   ← você copia aqui localmente (não vai pro Git)
 ```
 
 ## Formato do CSV (Excel PT-BR)

@@ -1,0 +1,12 @@
+# Oracle Managed Data Access — apenas local na máquina (nunca no Git)
+lib/*.dll
+lib/*.pdb
+lib/*.xml
+lib/*.config
+*.dll
+Oracle.ManagedDataAccess*
+**/Oracle.ManagedDataAccess.dll
+
+# Pacotes / extratos NuGet locais
+packages/
+*.nupkg
