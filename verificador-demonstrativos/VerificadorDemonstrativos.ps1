@@ -10,11 +10,34 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $script:AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Caminho padrão: lib\Oracle.ManagedDataAccess.dll (ao lado do .ps1)
 $script:OracleDllCandidates = @(
-    (Join-Path $script:AppDir 'Oracle.ManagedDataAccess.dll'),
     (Join-Path $script:AppDir 'lib\Oracle.ManagedDataAccess.dll'),
+    (Join-Path $script:AppDir 'Oracle.ManagedDataAccess.dll'),
     (Join-Path $env:USERPROFILE '.nuget\packages\oracle.manageddataaccess*\*\lib\net462\Oracle.ManagedDataAccess.dll'),
     (Join-Path $env:USERPROFILE '.nuget\packages\oracle.manageddataaccess*\*\lib\net40\Oracle.ManagedDataAccess.dll')
+)
+
+# Colunas fixas do resultado (garantem CSV alinhado mesmo sem linhas)
+$script:ResultColumns = @(
+    'COD_PRESTADOR',
+    'IDT_DOCUMENTO',
+    'COD_ORIGEM',
+    'DAT_PAGAMENTO',
+    'COD_SITUACAO_DOC',
+    'IDT_ANEXO',
+    'IDT_ITEM',
+    'COD_SERVICO',
+    'COD_GLOSA_BLOQUEIO',
+    'COD_SITUACAO_ITEM',
+    'DAT_INCLUSAO',
+    'COD_NIV_LIBERACAO_ITEM',
+    'COD_REG_RESP_ITEM',
+    'VAL_ITEM',
+    'VAL_TOTAL_COPART',
+    'COD_NIV_LIBERACAO_DOC',
+    'COD_REG_RESP_DOC',
+    'VAL_GLOSADO'
 )
 
 function Get-OracleConnectionString {
@@ -42,11 +65,15 @@ function Import-OracleManagedDataAccess {
     }
     $dll = $resolved | Select-Object -First 1
     if (-not $dll) {
+        $expected = Join-Path $script:AppDir 'lib\Oracle.ManagedDataAccess.dll'
         throw @"
 Oracle.ManagedDataAccess.dll não encontrado.
 
-Coloque a DLL ao lado deste script (ou em lib\) ou instale o pacote NuGet Oracle.ManagedDataAccess.
-Download NuGet: https://www.nuget.org/packages/Oracle.ManagedDataAccess/
+Coloque a DLL em:
+  $expected
+
+(pacote NuGet Oracle.ManagedDataAccess — https://www.nuget.org/packages/Oracle.ManagedDataAccess/)
+Não é necessário Oracle Instant Client.
 "@
     }
     [void][System.Reflection.Assembly]::LoadFrom($dll.FullName)
@@ -200,8 +227,101 @@ SELECT
     return $table
 }
 
-function Test-ImportExcelAvailable {
-    return $null -ne (Get-Module -ListAvailable -Name ImportExcel | Select-Object -First 1)
+function New-EmptyResultTable {
+    $t = New-Object System.Data.DataTable
+    foreach ($name in $script:ResultColumns) {
+        [void]$t.Columns.Add($name, [string])
+    }
+    return $t
+}
+
+function Ensure-ResultSchema {
+    param([Parameter(Mandatory)][System.Data.DataTable]$Table)
+    # Garante COD_PRESTADOR e demais colunas (células vazias mantêm o alinhamento)
+    foreach ($name in $script:ResultColumns) {
+        if (-not $Table.Columns.Contains($name)) {
+            [void]$Table.Columns.Add($name, [string])
+        }
+    }
+    # COD_PRESTADOR sempre na primeira posição
+    if ($Table.Columns.Contains('COD_PRESTADOR') -and $Table.Columns['COD_PRESTADOR'].Ordinal -ne 0) {
+        $Table.Columns['COD_PRESTADOR'].SetOrdinal(0)
+    }
+    return $Table
+}
+
+function Format-CsvCell {
+    param($Value)
+    if ($null -eq $Value -or [object]::ReferenceEquals($Value, [DBNull]::Value)) {
+        return ''
+    }
+    $cultPt = [System.Globalization.CultureInfo]::GetCultureInfo('pt-BR')
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+
+    if ($Value -is [datetime]) {
+        return ([datetime]$Value).ToString('yyyy-MM-dd HH:mm:ss', $inv)
+    }
+    if ($Value -is [decimal] -or $Value -is [double] -or $Value -is [float] -or $Value -is [single]) {
+        # pt-BR: vírgula decimal; delimitador do CSV é ';' — colunas não quebram
+        return ([decimal]$Value).ToString('0.########', $cultPt)
+    }
+    if ($Value -is [bool]) {
+        return $(if ($Value) { '1' } else { '0' })
+    }
+    return [string]$Value
+}
+
+function Escape-CsvField {
+    param([AllowNull()][string]$Text)
+    if ($null -eq $Text) { $Text = '' }
+    # Sempre entre aspas (RFC4180) — células vazias viram "" e mantêm a coluna
+    return '"' + ($Text -replace '"', '""') + '"'
+}
+
+function Export-CsvSeguro {
+    <#
+      CSV seguro para Excel PT-BR:
+      - UTF-8 com BOM
+      - linha sep=; (Excel reconhece o delimitador)
+      - delimitador ;
+      - todos os campos entre aspas
+      - colunas fixas (incluindo vazias)
+      - decimais em pt-BR (vírgula)
+    #>
+    param(
+        [Parameter(Mandatory)][System.Data.DataTable]$Table,
+        [Parameter(Mandatory)][string]$Path
+    )
+    $Table = Ensure-ResultSchema -Table $Table
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+
+    $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+    $sw = New-Object System.IO.StreamWriter($Path, $false, $utf8Bom)
+    try {
+        $sw.WriteLine('sep=;')
+        $colNames = @($script:ResultColumns)
+        # Inclui colunas extras do Oracle, se houver, após as fixas
+        foreach ($c in $Table.Columns) {
+            if ($colNames -notcontains $c.ColumnName) {
+                $colNames += $c.ColumnName
+            }
+        }
+        $sw.WriteLine((($colNames | ForEach-Object { Escape-CsvField -Text $_ }) -join ';'))
+        foreach ($row in $Table.Rows) {
+            $cells = foreach ($name in $colNames) {
+                $raw = if ($Table.Columns.Contains($name)) { $row[$name] } else { $null }
+                Escape-CsvField -Text (Format-CsvCell -Value $raw)
+            }
+            $sw.WriteLine(($cells -join ';'))
+        }
+    }
+    finally {
+        $sw.Close()
+        $sw.Dispose()
+    }
 }
 
 function Export-Resultados {
@@ -210,57 +330,43 @@ function Export-Resultados {
         [Parameter(Mandatory)][string]$OutputPath,
         [Parameter(Mandatory)][System.Windows.Forms.Label]$StatusLabel
     )
-    $dir = Split-Path -Parent $OutputPath
-    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $path = $OutputPath
+    if (-not $path.ToLowerInvariant().EndsWith('.csv')) {
+        $path = [System.IO.Path]::ChangeExtension($path, '.csv')
     }
-
-    $useXlsx = $OutputPath.ToLowerInvariant().EndsWith('.xlsx')
-    if ($useXlsx -and (Test-ImportExcelAvailable)) {
-        Import-Module ImportExcel -ErrorAction Stop
-        if (Test-Path -LiteralPath $OutputPath) { Remove-Item -LiteralPath $OutputPath -Force }
-        $Table | Export-Excel -Path $OutputPath -WorksheetName 'Demonstrativos' -AutoSize -TableName 'Resultados' -FreezeTopRow
-        $StatusLabel.Text = "Exportado XLSX: $OutputPath"
-        return @{ Path = $OutputPath; Format = 'xlsx' }
-    }
-
-    if ($useXlsx) {
-        $csvPath = [System.IO.Path]::ChangeExtension($OutputPath, '.csv')
-        $StatusLabel.Text = 'ImportExcel não instalado — gerando CSV...'
-        $Table | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding UTF8 -Delimiter ';'
-        [System.Windows.Forms.MessageBox]::Show(
-            "O módulo ImportExcel não está instalado.`n`nArquivo gerado em CSV:`n$csvPath`n`nPara XLSX, instale no PowerShell:`nInstall-Module ImportExcel -Scope CurrentUser",
-            'Exportação CSV (fallback)',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        ) | Out-Null
-        return @{ Path = $csvPath; Format = 'csv' }
-    }
-
-    $Table | Export-Csv -LiteralPath $OutputPath -NoTypeInformation -Encoding UTF8 -Delimiter ';'
-    $StatusLabel.Text = "Exportado CSV: $OutputPath"
-    return @{ Path = $OutputPath; Format = 'csv' }
+    Export-CsvSeguro -Table $Table -Path $path
+    $StatusLabel.Text = "Exportado CSV: $path"
+    return @{ Path = $path; Format = 'csv' }
 }
 
 function Merge-DataTables {
     param([System.Data.DataTable[]]$Tables)
-    $merged = New-Object System.Data.DataTable
+    $merged = New-EmptyResultTable
+    # Registra colunas extras antes de criar linhas
     foreach ($t in $Tables) {
         if ($null -eq $t) { continue }
-        if ($merged.Columns.Count -eq 0) {
-            $merged = $t.Clone()
+        foreach ($c in $t.Columns) {
+            if (-not $merged.Columns.Contains($c.ColumnName)) {
+                [void]$merged.Columns.Add($c.ColumnName, [string])
+            }
         }
+    }
+    foreach ($t in $Tables) {
+        if ($null -eq $t) { continue }
         foreach ($row in $t.Rows) {
-            [void]$merged.ImportRow($row)
+            $nr = $merged.NewRow()
+            foreach ($c in $merged.Columns) {
+                if ($t.Columns.Contains($c.ColumnName)) {
+                    $nr[$c.ColumnName] = Format-CsvCell -Value $row[$c.ColumnName]
+                }
+                else {
+                    $nr[$c.ColumnName] = ''
+                }
+            }
+            [void]$merged.Rows.Add($nr)
         }
     }
-    if ($merged.Columns.Count -eq 0) {
-        # Schema mínimo se nenhum prestador retornou linhas
-        [void]$merged.Columns.Add('COD_PRESTADOR')
-        [void]$merged.Columns.Add('IDT_DOCUMENTO')
-        [void]$merged.Columns.Add('MENSAGEM')
-    }
-    return $merged
+    return (Ensure-ResultSchema -Table $merged)
 }
 
 # --- UI ---
@@ -326,9 +432,9 @@ $btnLista.Size = New-Object System.Drawing.Size(70, 26)
 $form.Controls.Add($btnLista)
 
 $txtSaida = New-Object System.Windows.Forms.TextBox
-$defaultOut = Join-Path ([Environment]::GetFolderPath('MyDocuments')) ("demonstrativos_{0:yyyyMMdd_HHmmss}.xlsx" -f (Get-Date))
+$defaultOut = Join-Path ([Environment]::GetFolderPath('MyDocuments')) ("demonstrativos_{0:yyyyMMdd_HHmmss}.csv" -f (Get-Date))
 $txtSaida.Text = $defaultOut
-Add-LabeledControl -Form $form -LabelText 'Arquivo de saída' -Y 245 -Control $txtSaida -ControlWidth 340
+Add-LabeledControl -Form $form -LabelText 'Arquivo de saída (CSV)' -Y 245 -Control $txtSaida -ControlWidth 340
 
 $btnSaida = New-Object System.Windows.Forms.Button
 $btnSaida.Text = 'Procurar...'
@@ -396,11 +502,16 @@ $btnLista.Add_Click({
 
 $btnSaida.Add_Click({
     $sfd = New-Object System.Windows.Forms.SaveFileDialog
-    $sfd.Filter = 'Excel (*.xlsx)|*.xlsx|CSV (*.csv)|*.csv'
-    $sfd.Title = 'Arquivo de saída'
+    $sfd.Filter = 'CSV Excel PT-BR (*.csv)|*.csv|Todos (*.*)|*.*'
+    $sfd.DefaultExt = 'csv'
+    $sfd.Title = 'Arquivo de saída CSV'
     $sfd.FileName = [System.IO.Path]::GetFileName($txtSaida.Text)
     if ($sfd.ShowDialog() -eq 'OK') {
-        $txtSaida.Text = $sfd.FileName
+        $name = $sfd.FileName
+        if (-not $name.ToLowerInvariant().EndsWith('.csv')) {
+            $name = "$name.csv"
+        }
+        $txtSaida.Text = $name
     }
 })
 
